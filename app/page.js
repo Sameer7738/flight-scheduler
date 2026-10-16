@@ -58,6 +58,11 @@ function formatDDMon(y, m, d) {
   return `${pad(d)}.${MONTHS[m - 1]}`;
 }
 
+function formatFullDate(y, m, d) {
+  return `${pad(d)} ${MONTHS[m - 1]} ${y}`;
+}
+
+/** Builds the original single-line output (kept unchanged). */
 function buildLegOutput(leg, airportData) {
   const dep = airportData[leg.depIcao?.toUpperCase()];
   const arr = airportData[leg.arrIcao?.toUpperCase()];
@@ -92,6 +97,52 @@ function buildLegOutput(leg, airportData) {
   return `${header} | ETD ${etd}/${etdLt} ${dep.icao} | ETA ${eta}/${etaLt} ${arr.icao} | EET ${leg.eet} | ${pax}`;
 }
 
+/** Builds structured Local + UTC timings for the new detailed section. */
+function buildDetailedTimings(leg, airportData) {
+  const dep = airportData[leg.depIcao?.toUpperCase()];
+  const arr = airportData[leg.arrIcao?.toUpperCase()];
+  if (!dep || !arr || !leg.date || !leg.time || !leg.eet) return null;
+
+  const [Y, M, D] = leg.date.split("-").map(Number);
+  const [depH, depMin] = leg.time.split(":").map(Number);
+  const [eetH, eetMin] = leg.eet.split(":").map(Number);
+
+  const depEpoch = Date.UTC(Y, M - 1, D, depH, depMin);
+  const eetMs = (eetH * 60 + eetMin) * 60000;
+  const arrEpoch = depEpoch + eetMs;
+
+  const zuluDepDate = { y: Y, m: M, d: D };
+  const zuluArrDate = getLocalParts(arrEpoch, "UTC");
+  const localDep = getLocalParts(depEpoch, dep.tz);
+  const localArr = getLocalParts(arrEpoch, arr.tz);
+
+  const zArrDiff = dayDiff(zuluDepDate, zuluArrDate);
+  const ltDepDiff = dayDiff(zuluDepDate, localDep);
+  const ltArrDiff = dayDiff(zuluDepDate, localArr);
+
+  const utcEtd = `${pad(depH)}:${pad(depMin)}Z`;
+  const utcEta = `${pad(zuluArrDate.h)}:${pad(zuluArrDate.min)}Z${dayMarker(zArrDiff)}`;
+  const localEtd = `${pad(localDep.h)}:${pad(localDep.min)}LT${dayMarker(ltDepDiff)}`;
+  const localEta = `${pad(localArr.h)}:${pad(localArr.min)}LT${dayMarker(ltArrDiff)}`;
+
+  const header = formatFullDate(Y, M, D);
+  const pax = leg.pax ? `${Number(leg.pax)} PAX` : "—";
+
+  return {
+    header,
+    depIcao: dep.icao,
+    arrIcao: arr.icao,
+    depTz: dep.tz,
+    arrTz: arr.tz,
+    depName: dep.name || dep.city || dep.icao,
+    arrName: arr.name || arr.city || arr.icao,
+    eet: leg.eet,
+    pax,
+    utc: { etd: utcEtd, eta: utcEta },
+    local: { etd: localEtd, eta: localEta },
+  };
+}
+
 function emptyLeg() {
   return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", pax: "" };
 }
@@ -99,6 +150,7 @@ function emptyLeg() {
 export default function FlightScheduler() {
   const [legs, setLegs] = useState([emptyLeg()]);
   const [copied, setCopied] = useState(false);
+  const [copiedDetailed, setCopiedDetailed] = useState(false);
   const [airportData, setAirportData] = useState(null);
   const [loadError, setLoadError] = useState(false);
 
@@ -118,6 +170,7 @@ export default function FlightScheduler() {
   }, []);
 
   const outputs = useMemo(() => legs.map((l) => buildLegOutput(l, airportData || {})), [legs, airportData]);
+  const detailed = useMemo(() => legs.map((l) => buildDetailedTimings(l, airportData || {})), [legs, airportData]);
   const validCount = outputs.filter(Boolean).length;
 
   if (!airportData) {
@@ -140,6 +193,25 @@ export default function FlightScheduler() {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  function copyDetailed() {
+    const lines = detailed
+      .filter(Boolean)
+      .map((d, i) => {
+        return [
+          `LEG ${i + 1}  ·  ${d.header}`,
+          `  ${d.depIcao} (${d.depName})  →  ${d.arrIcao} (${d.arrName})`,
+          `  EET ${d.eet}   ·   ${d.pax}`,
+          `  UTC   :  ETD ${d.utc.etd}   →   ETA ${d.utc.eta}`,
+          `  LOCAL :  ETD ${d.local.etd} (${d.depTz})   →   ETA ${d.local.eta} (${d.arrTz})`,
+        ].join("\n");
+      });
+    const text = lines.join("\n\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedDetailed(true);
+      setTimeout(() => setCopiedDetailed(false), 1500);
     });
   }
 
@@ -234,6 +306,7 @@ export default function FlightScheduler() {
           <Plus size={16} /> Add leg
         </button>
 
+        {/* ===== Original Output (unchanged) ===== */}
         <div className="mt-8">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Output</h2>
@@ -251,6 +324,76 @@ export default function FlightScheduler() {
             )}
             {outputs.map((line, i) => line && <div key={i} className="text-emerald-400">{line}</div>)}
           </div>
+        </div>
+
+        {/* ===== New Detailed Local + UTC section ===== */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Detailed Timings (Local + UTC)</h2>
+            {validCount > 0 && (
+              <button onClick={copyDetailed}
+                className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+                {copiedDetailed ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                {copiedDetailed ? "Copied" : "Copy all"}
+              </button>
+            )}
+          </div>
+
+          {validCount === 0 ? (
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 text-slate-600 text-sm min-h-[80px]">
+              Fill in a leg to see Local and UTC times broken out separately.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {detailed.map((d, i) =>
+                d ? (
+                  <div key={i} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
+                      <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Leg {i + 1}</span>
+                      <span className="text-sm text-slate-300">{d.header}</span>
+                      <span className="text-slate-600">·</span>
+                      <span className="text-sm text-sky-400 font-mono">{d.depIcao}</span>
+                      <span className="text-slate-500 text-xs">→</span>
+                      <span className="text-sm text-sky-400 font-mono">{d.arrIcao}</span>
+                      <span className="text-slate-600 text-xs">EET {d.eet} · {d.pax}</span>
+                    </div>
+
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      {/* UTC block */}
+                      <div className="bg-black/40 rounded-lg border border-slate-800 p-3">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2 font-medium">UTC / Zulu</div>
+                        <div className="font-mono text-sm space-y-1">
+                          <div className="flex justify-between gap-2">
+                            <span className="text-slate-500">ETD</span>
+                            <span className="text-emerald-400">{d.utc.etd}</span>
+                          </div>
+                          <div className="flex justify-between gap-2">
+                            <span className="text-slate-500">ETA</span>
+                            <span className="text-emerald-400">{d.utc.eta}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Local block */}
+                      <div className="bg-black/40 rounded-lg border border-slate-800 p-3">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2 font-medium">Local</div>
+                        <div className="font-mono text-sm space-y-1">
+                          <div className="flex justify-between gap-2">
+                            <span className="text-slate-500">ETD</span>
+                            <span className="text-sky-300">{d.local.etd} <span className="text-slate-600 text-xs">({d.depTz})</span></span>
+                          </div>
+                          <div className="flex justify-between gap-2">
+                            <span className="text-slate-500">ETA</span>
+                            <span className="text-sky-300">{d.local.eta} <span className="text-slate-600 text-xs">({d.arrTz})</span></span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
