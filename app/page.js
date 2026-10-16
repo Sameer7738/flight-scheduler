@@ -58,6 +58,10 @@ function formatDDMon(y, m, d) {
   return `${pad(d)}.${MONTHS[m - 1]}`;
 }
 
+function hhmm(h, min) {
+  return `${pad(h)}${pad(min)}`;
+}
+
 /**
  * Original mixed format: ETD 1000Z/1100LT ... (kept as-is)
  */
@@ -83,7 +87,6 @@ function buildMixedLine(leg, airportData) {
   const ltDepDiff = dayDiff(zuluDepDate, localDep);
   const ltArrDiff = dayDiff(zuluDepDate, localArr);
 
-  // Original style day markers (no leading space before parenthesis in original)
   const zMarker = zArrDiff === 0 ? "" : zArrDiff > 0 ? `(+${zArrDiff})` : `(${zArrDiff})`;
   const ltDepMarker = ltDepDiff === 0 ? "" : ltDepDiff > 0 ? `(+${ltDepDiff})` : `(${ltDepDiff})`;
   const ltArrMarker = ltArrDiff === 0 ? "" : ltArrDiff > 0 ? `(+${ltArrDiff})` : `(${ltArrDiff})`;
@@ -100,7 +103,7 @@ function buildMixedLine(leg, airportData) {
 }
 
 /**
- * Pure Local and pure UTC schedule lines (new feature)
+ * Pure Local and pure UTC schedule lines
  */
 function buildScheduleLines(leg, airportData) {
   const dep = airportData[leg.depIcao?.toUpperCase()];
@@ -141,8 +144,74 @@ function buildScheduleLines(leg, airportData) {
   };
 }
 
+/**
+ * Build MVT messages (UTC + Local) from actual times.
+ * EA is calculated from Takeoff + ETE.
+ */
+function buildMvt(mvt, airportData, tail) {
+  const dep = airportData[mvt.depIcao?.toUpperCase()];
+  const arr = airportData[mvt.arrIcao?.toUpperCase()];
+  if (!dep || !arr || !mvt.date || !mvt.chocks || !mvt.takeoff || !mvt.ete) return null;
+
+  const callsign = (tail || "ACFT").trim().toUpperCase();
+  const [Y, M, D] = mvt.date.split("-").map(Number);
+  const [chH, chMin] = mvt.chocks.split(":").map(Number);
+  const [toH, toMin] = mvt.takeoff.split(":").map(Number);
+  const [eteH, eteMin] = mvt.ete.split(":").map(Number);
+
+  // Epochs in UTC
+  const chocksEpoch = Date.UTC(Y, M - 1, D, chH, chMin);
+  const takeoffEpoch = Date.UTC(Y, M - 1, D, toH, toMin);
+  // If takeoff appears earlier than chocks on the clock, assume next day
+  const toEpochAdj = takeoffEpoch < chocksEpoch ? takeoffEpoch + 86400000 : takeoffEpoch;
+  const eteMs = (eteH * 60 + eteMin) * 60000;
+  const eaEpoch = toEpochAdj + eteMs;
+
+  // UTC parts
+  const utcChocks = { h: chH, min: chMin, d: D };
+  const utcTakeoff = getLocalParts(toEpochAdj, "UTC");
+  const utcEa = getLocalParts(eaEpoch, "UTC");
+
+  // Local parts
+  const localChocks = getLocalParts(chocksEpoch, dep.tz);
+  const localTakeoff = getLocalParts(toEpochAdj, dep.tz);
+  const localEa = getLocalParts(eaEpoch, arr.tz);
+
+  const crew = mvt.crew ? pad(Number(mvt.crew)) : "03";
+  const paxLine = mvt.paxText?.trim() || "NO PAX";
+
+  const utcMsg = [
+    "MVT",
+    `${callsign}/${pad(D)}.${callsign}.${dep.icao}`,
+    `AD ${hhmm(utcChocks.h, utcChocks.min)}/${hhmm(utcTakeoff.h, utcTakeoff.min)} EA ${hhmm(utcEa.h, utcEa.min)} ${arr.icao}`,
+    `CREW${crew}/ ${paxLine}`,
+  ].join("\n");
+
+  const localMsg = [
+    "MVT",
+    `${callsign}/${pad(localChocks.d)}.${callsign}.${dep.icao}`,
+    `AD ${hhmm(localChocks.h, localChocks.min)}/${hhmm(localTakeoff.h, localTakeoff.min)} EA ${hhmm(localEa.h, localEa.min)} ${arr.icao}`,
+    `CREW${crew}/ ${paxLine}`,
+  ].join("\n");
+
+  return { utcMsg, localMsg };
+}
+
 function emptyLeg() {
   return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", pax: "" };
+}
+
+function emptyMvt() {
+  return {
+    date: "",
+    depIcao: "",
+    arrIcao: "",
+    chocks: "",
+    takeoff: "",
+    ete: "",
+    crew: "3",
+    paxText: "NO PAX",
+  };
 }
 
 export default function FlightScheduler() {
@@ -150,8 +219,10 @@ export default function FlightScheduler() {
   const [tail, setTail] = useState("");
   const [copiedMixed, setCopiedMixed] = useState(false);
   const [copiedSeparate, setCopiedSeparate] = useState(false);
+  const [copiedMvt, setCopiedMvt] = useState(false);
   const [airportData, setAirportData] = useState(null);
   const [loadError, setLoadError] = useState(false);
+  const [mvt, setMvt] = useState(emptyMvt());
 
   useEffect(() => {
     fetch("/airports.json")
@@ -178,7 +249,6 @@ export default function FlightScheduler() {
 
   const validCount = mixedOutputs.filter(Boolean).length;
 
-  // Separate Local + UTC blocks text
   const separateText = useMemo(() => {
     if (validCount === 0) return "";
     const label = (tail || "ACFT").trim().toUpperCase();
@@ -216,6 +286,11 @@ export default function FlightScheduler() {
     return `${localBlock}\n\n${utcBlock}`;
   }, [schedule, validCount, tail]);
 
+  const mvtResult = useMemo(
+    () => buildMvt(mvt, airportData || {}, tail),
+    [mvt, airportData, tail]
+  );
+
   if (!airportData) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center gap-2">
@@ -230,6 +305,10 @@ export default function FlightScheduler() {
   }
   function addLeg() { setLegs((prev) => [...prev, emptyLeg()]); }
   function removeLeg(id) { setLegs((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev)); }
+
+  function updateMvt(field, value) {
+    setMvt((prev) => ({ ...prev, [field]: value }));
+  }
 
   function copyMixed() {
     const text = mixedOutputs.filter(Boolean).join("\n");
@@ -247,10 +326,28 @@ export default function FlightScheduler() {
     });
   }
 
+  function copyMvt() {
+    if (!mvtResult) return;
+    const text = [
+      "// UTC",
+      mvtResult.utcMsg,
+      "",
+      "// LOCAL",
+      mvtResult.localMsg,
+    ].join("\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedMvt(true);
+      setTimeout(() => setCopiedMvt(false), 1500);
+    });
+  }
+
   function icaoStatus(code) {
     if (!code) return null;
     return airportData[code.toUpperCase()] ? "ok" : "unknown";
   }
+
+  const mvtDepStatus = icaoStatus(mvt.depIcao);
+  const mvtArrStatus = icaoStatus(mvt.arrIcao);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
@@ -270,7 +367,7 @@ export default function FlightScheduler() {
 
         {/* Tail / Registration */}
         <div className="mb-6 max-w-xs">
-          <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (for separate schedule headers)</label>
+          <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (used in schedule headers & MVT)</label>
           <input
             type="text"
             value={tail}
@@ -280,6 +377,7 @@ export default function FlightScheduler() {
           />
         </div>
 
+        {/* ===== LEGS ===== */}
         <div className="space-y-4">
           {legs.map((leg, idx) => {
             const depStatus = icaoStatus(leg.depIcao);
@@ -349,7 +447,7 @@ export default function FlightScheduler() {
           <Plus size={16} /> Add leg
         </button>
 
-        {/* ===== 1. Original mixed Output (Z + LT together) ===== */}
+        {/* ===== 1. Original mixed Output ===== */}
         <div className="mt-8">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Output (Zulu + Local together)</h2>
@@ -389,6 +487,110 @@ export default function FlightScheduler() {
               </span>
             ) : (
               <div className="text-emerald-400">{separateText}</div>
+            )}
+          </div>
+        </div>
+
+        {/* ===== 3. MVT Report Generator ===== */}
+        <div className="mt-12 pt-8 border-t border-slate-800">
+          <h2 className="text-lg font-semibold text-slate-200 mb-1">MVT Report</h2>
+          <p className="text-slate-500 text-sm mb-4">
+            Enter actual chocks-off, takeoff and ETE (all in UTC). EA is calculated from takeoff + ETE. Both UTC and Local MVT messages are generated.
+          </p>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Date (UTC)</label>
+                <input type="date" value={mvt.date}
+                  onChange={(e) => updateMvt("date", e.target.value)}
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Dep ICAO</label>
+                <input type="text" maxLength={4} value={mvt.depIcao}
+                  onChange={(e) => updateMvt("depIcao", e.target.value.toUpperCase())}
+                  placeholder="KVNY"
+                  className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
+                    mvtDepStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
+                  }`} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Arr ICAO</label>
+                <input type="text" maxLength={4} value={mvt.arrIcao}
+                  onChange={(e) => updateMvt("arrIcao", e.target.value.toUpperCase())}
+                  placeholder="KFAT"
+                  className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
+                    mvtArrStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
+                  }`} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Crew</label>
+                <input type="number" min="1" value={mvt.crew}
+                  onChange={(e) => updateMvt("crew", e.target.value)}
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Chocks-off (UTC)</label>
+                <input type="time" value={mvt.chocks}
+                  onChange={(e) => updateMvt("chocks", e.target.value)}
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Takeoff (UTC)</label>
+                <input type="time" value={mvt.takeoff}
+                  onChange={(e) => updateMvt("takeoff", e.target.value)}
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">ETE (HH:MM)</label>
+                <input type="time" value={mvt.ete}
+                  onChange={(e) => updateMvt("ete", e.target.value)}
+                  placeholder="00:30"
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">PAX text</label>
+                <input type="text" value={mvt.paxText}
+                  onChange={(e) => updateMvt("paxText", e.target.value.toUpperCase())}
+                  placeholder="NO PAX"
+                  className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none uppercase" />
+              </div>
+            </div>
+            {(mvtDepStatus === "unknown" || mvtArrStatus === "unknown") && (
+              <p className="text-amber-500 text-xs mt-2">
+                ICAO code not found in database — check spelling.
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wide">MVT Output</h3>
+            {mvtResult && (
+              <button onClick={copyMvt}
+                className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+                {copiedMvt ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                {copiedMvt ? "Copied" : "Copy both"}
+              </button>
+            )}
+          </div>
+
+          <div className="bg-black rounded-xl border border-slate-800 p-4 font-mono text-sm min-h-[140px] whitespace-pre-wrap">
+            {!mvtResult ? (
+              <span className="text-slate-600">
+                Fill date, airports, chocks-off, takeoff and ETE to generate MVT messages.
+              </span>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">UTC</div>
+                  <div className="text-emerald-400">{mvtResult.utcMsg}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Local</div>
+                  <div className="text-sky-300">{mvtResult.localMsg}</div>
+                </div>
+              </div>
             )}
           </div>
         </div>
