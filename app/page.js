@@ -59,15 +59,14 @@ function formatDDMon(y, m, d) {
 }
 
 /**
- * Compute pure Local and pure UTC schedule lines for one leg.
- * Returns null if the leg is incomplete / unknown ICAO.
+ * Original mixed format: ETD 1000Z/1100LT ... (kept as-is)
  */
-function buildScheduleLines(leg, airportData) {
+function buildMixedLine(leg, airportData) {
   const dep = airportData[leg.depIcao?.toUpperCase()];
   const arr = airportData[leg.arrIcao?.toUpperCase()];
   if (!dep || !arr || !leg.date || !leg.time || !leg.eet) return null;
 
-  const [Y, M, D] = leg.date.split("-").map(Number); // Zulu date from input
+  const [Y, M, D] = leg.date.split("-").map(Number);
   const [depH, depMin] = leg.time.split(":").map(Number);
   const [eetH, eetMin] = leg.eet.split(":").map(Number);
 
@@ -75,15 +74,52 @@ function buildScheduleLines(leg, airportData) {
   const eetMs = (eetH * 60 + eetMin) * 60000;
   const arrEpoch = depEpoch + eetMs;
 
-  // UTC parts
-  const utcDep = { y: Y, m: M, d: D, h: depH, min: depMin };
-  const utcArr = getLocalParts(arrEpoch, "UTC");
-
-  // Local parts
+  const zuluDepDate = { y: Y, m: M, d: D };
+  const zuluArrDate = getLocalParts(arrEpoch, "UTC");
   const localDep = getLocalParts(depEpoch, dep.tz);
   const localArr = getLocalParts(arrEpoch, arr.tz);
 
-  // Day markers relative to the line's own departure date
+  const zArrDiff = dayDiff(zuluDepDate, zuluArrDate);
+  const ltDepDiff = dayDiff(zuluDepDate, localDep);
+  const ltArrDiff = dayDiff(zuluDepDate, localArr);
+
+  // Original style day markers (no leading space before parenthesis in original)
+  const zMarker = zArrDiff === 0 ? "" : zArrDiff > 0 ? `(+${zArrDiff})` : `(${zArrDiff})`;
+  const ltDepMarker = ltDepDiff === 0 ? "" : ltDepDiff > 0 ? `(+${ltDepDiff})` : `(${ltDepDiff})`;
+  const ltArrMarker = ltArrDiff === 0 ? "" : ltArrDiff > 0 ? `(+${ltArrDiff})` : `(${ltArrDiff})`;
+
+  const etd = `${pad(depH)}${pad(depMin)}Z`;
+  const etdLt = `${pad(localDep.h)}${pad(localDep.min)}LT${ltDepMarker}`;
+  const eta = `${pad(zuluArrDate.h)}${pad(zuluArrDate.min)}Z${zMarker}`;
+  const etaLt = `${pad(localArr.h)}${pad(localArr.min)}LT${ltArrMarker}`;
+
+  const header = formatDDMon(Y, M, D);
+  const pax = leg.pax !== "" && leg.pax != null ? `${pad(Number(leg.pax))} PAX` : "PAX";
+
+  return `${header} | ETD ${etd}/${etdLt} ${dep.icao} | ETA ${eta}/${etaLt} ${arr.icao} | EET ${leg.eet} | ${pax}`;
+}
+
+/**
+ * Pure Local and pure UTC schedule lines (new feature)
+ */
+function buildScheduleLines(leg, airportData) {
+  const dep = airportData[leg.depIcao?.toUpperCase()];
+  const arr = airportData[leg.arrIcao?.toUpperCase()];
+  if (!dep || !arr || !leg.date || !leg.time || !leg.eet) return null;
+
+  const [Y, M, D] = leg.date.split("-").map(Number);
+  const [depH, depMin] = leg.time.split(":").map(Number);
+  const [eetH, eetMin] = leg.eet.split(":").map(Number);
+
+  const depEpoch = Date.UTC(Y, M - 1, D, depH, depMin);
+  const eetMs = (eetH * 60 + eetMin) * 60000;
+  const arrEpoch = depEpoch + eetMs;
+
+  const utcDep = { y: Y, m: M, d: D, h: depH, min: depMin };
+  const utcArr = getLocalParts(arrEpoch, "UTC");
+  const localDep = getLocalParts(depEpoch, dep.tz);
+  const localArr = getLocalParts(arrEpoch, arr.tz);
+
   const utcEtaMarker = dayMarker(dayDiff(utcDep, utcArr));
   const localEtaMarker = dayMarker(dayDiff(localDep, localArr));
 
@@ -97,7 +133,12 @@ function buildScheduleLines(leg, airportData) {
   const utcLine =
     `${formatDDMon(utcDep.y, utcDep.m, utcDep.d)} | ETD ${pad(utcDep.h)}${pad(utcDep.min)}Z ${dep.icao} | ETA ${pad(utcArr.h)}${pad(utcArr.min)}Z${utcEtaMarker} ${arr.icao} | EET ${leg.eet} | ${pax}`;
 
-  return { localLine, utcLine, localDepDate: formatDDMon(localDep.y, localDep.m, localDep.d), utcDepDate: formatDDMon(utcDep.y, utcDep.m, utcDep.d) };
+  return {
+    localLine,
+    utcLine,
+    localDepDate: formatDDMon(localDep.y, localDep.m, localDep.d),
+    utcDepDate: formatDDMon(utcDep.y, utcDep.m, utcDep.d),
+  };
 }
 
 function emptyLeg() {
@@ -107,7 +148,8 @@ function emptyLeg() {
 export default function FlightScheduler() {
   const [legs, setLegs] = useState([emptyLeg()]);
   const [tail, setTail] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copiedMixed, setCopiedMixed] = useState(false);
+  const [copiedSeparate, setCopiedSeparate] = useState(false);
   const [airportData, setAirportData] = useState(null);
   const [loadError, setLoadError] = useState(false);
 
@@ -124,21 +166,26 @@ export default function FlightScheduler() {
       });
   }, []);
 
+  const mixedOutputs = useMemo(
+    () => legs.map((l) => buildMixedLine(l, airportData || {})),
+    [legs, airportData]
+  );
+
   const schedule = useMemo(
     () => legs.map((l) => buildScheduleLines(l, airportData || {})),
     [legs, airportData]
   );
-  const validCount = schedule.filter(Boolean).length;
 
-  // Build the full copyable text exactly in the requested format
-  const fullText = useMemo(() => {
+  const validCount = mixedOutputs.filter(Boolean).length;
+
+  // Separate Local + UTC blocks text
+  const separateText = useMemo(() => {
     if (validCount === 0) return "";
     const label = (tail || "ACFT").trim().toUpperCase();
 
     const localLines = schedule.filter(Boolean).map((s) => s.localLine);
     const utcLines = schedule.filter(Boolean).map((s) => s.utcLine);
 
-    // Insert a blank line when the departure date changes (visual day groups)
     function withDayBreaks(lines, dates) {
       const out = [];
       let prev = null;
@@ -184,11 +231,19 @@ export default function FlightScheduler() {
   function addLeg() { setLegs((prev) => [...prev, emptyLeg()]); }
   function removeLeg(id) { setLegs((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev)); }
 
-  function copyAll() {
-    if (!fullText) return;
-    navigator.clipboard.writeText(fullText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+  function copyMixed() {
+    const text = mixedOutputs.filter(Boolean).join("\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedMixed(true);
+      setTimeout(() => setCopiedMixed(false), 1500);
+    });
+  }
+
+  function copySeparate() {
+    if (!separateText) return;
+    navigator.clipboard.writeText(separateText).then(() => {
+      setCopiedSeparate(true);
+      setTimeout(() => setCopiedSeparate(false), 1500);
     });
   }
 
@@ -205,7 +260,7 @@ export default function FlightScheduler() {
           <h1 className="text-2xl font-semibold tracking-tight">Flight Schedule Generator</h1>
         </div>
         <p className="text-slate-400 text-sm mb-1">
-          Times entered in Zulu. Local and UTC schedules are generated separately.
+          Times entered in Zulu. Local time and date shifts are calculated automatically per airport timezone.
         </p>
         {loadError && (
           <p className="text-amber-500 text-xs mb-4">
@@ -215,7 +270,7 @@ export default function FlightScheduler() {
 
         {/* Tail / Registration */}
         <div className="mb-6 max-w-xs">
-          <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (for schedule header)</label>
+          <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (for separate schedule headers)</label>
           <input
             type="text"
             value={tail}
@@ -294,26 +349,46 @@ export default function FlightScheduler() {
           <Plus size={16} /> Add leg
         </button>
 
-        {/* ===== Schedule Output (Local + UTC blocks) ===== */}
+        {/* ===== 1. Original mixed Output (Z + LT together) ===== */}
         <div className="mt-8">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Schedule Output</h2>
+            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Output (Zulu + Local together)</h2>
             {validCount > 0 && (
-              <button onClick={copyAll}
+              <button onClick={copyMixed}
                 className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
-                {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                {copied ? "Copied" : "Copy all"}
+                {copiedMixed ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                {copiedMixed ? "Copied" : "Copy all"}
               </button>
             )}
           </div>
+          <div className="bg-black rounded-xl border border-slate-800 p-4 font-mono text-sm space-y-1 min-h-[80px]">
+            {validCount === 0 ? (
+              <span className="text-slate-600">Fill in a leg's date, times, ICAO codes and EET to see output here.</span>
+            ) : (
+              mixedOutputs.map((line, i) => line && <div key={i} className="text-emerald-400">{line}</div>)
+            )}
+          </div>
+        </div>
 
+        {/* ===== 2. Separate pure Local + pure UTC blocks ===== */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Separate Schedules (Local + UTC)</h2>
+            {validCount > 0 && (
+              <button onClick={copySeparate}
+                className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+                {copiedSeparate ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                {copiedSeparate ? "Copied" : "Copy all"}
+              </button>
+            )}
+          </div>
           <div className="bg-black rounded-xl border border-slate-800 p-4 font-mono text-sm min-h-[120px] whitespace-pre-wrap">
             {validCount === 0 ? (
               <span className="text-slate-600">
                 Fill in legs (and optionally a tail number) to generate the Local and UTC schedules.
               </span>
             ) : (
-              <div className="text-emerald-400">{fullText}</div>
+              <div className="text-emerald-400">{separateText}</div>
             )}
           </div>
         </div>
