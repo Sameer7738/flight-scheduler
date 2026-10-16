@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
-import { Plus, Trash2, Copy, Plane, Check, Loader2 } from "lucide-react";
+import { Plus, Trash2, Copy, Plane, Check, Loader2, Link2 } from "lucide-react";
 
 // In the real Next.js project, put your full database at /public/airports.json
 // and it gets fetched at runtime below — nothing to bundle, nothing to import.
@@ -60,6 +60,29 @@ function formatDDMon(y, m, d) {
 
 function hhmm(h, min) {
   return `${pad(h)}${pad(min)}`;
+}
+
+/** Format a UTC epoch as yyyy-mm-dd and HH:MM for form inputs */
+function epochToDateAndTime(epochMs) {
+  const p = getLocalParts(epochMs, "UTC");
+  return {
+    date: `${p.y}-${pad(p.m)}-${pad(p.d)}`,
+    time: `${pad(p.h)}:${pad(p.min)}`,
+  };
+}
+
+/**
+ * Given a fully filled leg, return the UTC epoch of its ETA (dep + EET).
+ * Returns null if incomplete.
+ */
+function getLegEtaEpoch(leg) {
+  if (!leg.date || !leg.time || !leg.eet) return null;
+  const [Y, M, D] = leg.date.split("-").map(Number);
+  const [depH, depMin] = leg.time.split(":").map(Number);
+  const [eetH, eetMin] = leg.eet.split(":").map(Number);
+  const depEpoch = Date.UTC(Y, M - 1, D, depH, depMin);
+  const eetMs = (eetH * 60 + eetMin) * 60000;
+  return depEpoch + eetMs;
 }
 
 /**
@@ -217,6 +240,7 @@ function emptyMvt() {
 export default function FlightScheduler() {
   const [legs, setLegs] = useState([emptyLeg()]);
   const [tail, setTail] = useState("");
+  const [turnaroundMin, setTurnaroundMin] = useState(60); // default 1 hour
   const [copiedMixed, setCopiedMixed] = useState(false);
   const [copiedSeparate, setCopiedSeparate] = useState(false);
   const [copiedMvt, setCopiedMvt] = useState(false);
@@ -306,6 +330,33 @@ export default function FlightScheduler() {
   function addLeg() { setLegs((prev) => [...prev, emptyLeg()]); }
   function removeLeg(id) { setLegs((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev)); }
 
+  /** Auto-chain: create next leg from this one using turnaround */
+  function chainNextLeg(fromLeg) {
+    const etaEpoch = getLegEtaEpoch(fromLeg);
+    if (etaEpoch == null || !fromLeg.arrIcao) return;
+
+    const turnMs = (Number(turnaroundMin) || 60) * 60 * 1000;
+    const nextEtdEpoch = etaEpoch + turnMs;
+    const { date, time } = epochToDateAndTime(nextEtdEpoch);
+
+    const next = {
+      ...emptyLeg(),
+      date,
+      time,
+      depIcao: fromLeg.arrIcao.toUpperCase(),
+      // arrIcao, eet, pax left blank for the user to fill
+    };
+
+    setLegs((prev) => {
+      const idx = prev.findIndex((l) => l.id === fromLeg.id);
+      if (idx === -1) return [...prev, next];
+      // Insert right after the current leg
+      const copy = [...prev];
+      copy.splice(idx + 1, 0, next);
+      return copy;
+    });
+  }
+
   function updateMvt(field, value) {
     setMvt((prev) => ({ ...prev, [field]: value }));
   }
@@ -365,16 +416,32 @@ export default function FlightScheduler() {
           </p>
         )}
 
-        {/* Tail / Registration */}
-        <div className="mb-6 max-w-xs">
-          <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (used in schedule headers & MVT)</label>
-          <input
-            type="text"
-            value={tail}
-            onChange={(e) => setTail(e.target.value.toUpperCase())}
-            placeholder="N291VK"
-            className="w-full bg-slate-800 rounded-lg px-3 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none uppercase font-mono"
-          />
+        {/* Tail + Turnaround settings */}
+        <div className="mb-6 flex flex-wrap gap-4 items-end">
+          <div className="max-w-xs flex-1 min-w-[160px]">
+            <label className="text-xs text-slate-500 block mb-1">Aircraft / Tail (used in schedule headers & MVT)</label>
+            <input
+              type="text"
+              value={tail}
+              onChange={(e) => setTail(e.target.value.toUpperCase())}
+              placeholder="N291VK"
+              className="w-full bg-slate-800 rounded-lg px-3 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none uppercase font-mono"
+            />
+          </div>
+          <div className="w-36">
+            <label className="text-xs text-slate-500 block mb-1">Turnaround (min)</label>
+            <input
+              type="number"
+              min="0"
+              step="5"
+              value={turnaroundMin}
+              onChange={(e) => setTurnaroundMin(e.target.value === "" ? 60 : Number(e.target.value))}
+              className="w-full bg-slate-800 rounded-lg px-3 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none"
+            />
+          </div>
+          <p className="text-xs text-slate-600 pb-1.5">
+            Default 60 min. Used by “Chain next leg”.
+          </p>
         </div>
 
         {/* ===== LEGS ===== */}
@@ -382,13 +449,26 @@ export default function FlightScheduler() {
           {legs.map((leg, idx) => {
             const depStatus = icaoStatus(leg.depIcao);
             const arrStatus = icaoStatus(leg.arrIcao);
+            const canChain = !!(leg.date && leg.time && leg.eet && leg.arrIcao);
             return (
               <div key={leg.id} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Leg {idx + 1}</span>
-                  <button onClick={() => removeLeg(leg.id)} className="text-slate-500 hover:text-red-400 transition-colors">
-                    <Trash2 size={16} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {canChain && (
+                      <button
+                        onClick={() => chainNextLeg(leg)}
+                        title={`Add next leg from ${leg.arrIcao} after ${turnaroundMin || 60} min turnaround`}
+                        className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition-colors px-2 py-1 rounded-md hover:bg-slate-800"
+                      >
+                        <Link2 size={14} />
+                        Chain next leg
+                      </button>
+                    )}
+                    <button onClick={() => removeLeg(leg.id)} className="text-slate-500 hover:text-red-400 transition-colors">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                   <div>
