@@ -526,12 +526,16 @@ export default function FlightScheduler() {
                       className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                         depStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                       }`} />
-                    {depStatus === "ok" && (
-                      <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
-                        {getOffsetLabel(airportData[leg.depIcao.toUpperCase()]?.tz, leg.date, leg.time)
-                          || airportData[leg.depIcao.toUpperCase()]?.tz}
-                      </p>
-                    )}
+                    {depStatus === "ok" && (() => {
+                      const ap = airportData[leg.depIcao.toUpperCase()];
+                      const off = getOffsetLabel(ap?.tz, leg.date, leg.time);
+                      return (
+                        <p className="text-[10px] text-sky-500/80 mt-0.5 leading-tight">
+                          <span className="text-slate-400">{ap?.name}</span>
+                          {off && <span className="font-mono"> · {off}</span>}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Arr ICAO</label>
@@ -541,12 +545,16 @@ export default function FlightScheduler() {
                       className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                         arrStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                       }`} />
-                    {arrStatus === "ok" && (
-                      <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
-                        {getOffsetLabel(airportData[leg.arrIcao.toUpperCase()]?.tz, leg.date, leg.time)
-                          || airportData[leg.arrIcao.toUpperCase()]?.tz}
-                      </p>
-                    )}
+                    {arrStatus === "ok" && (() => {
+                      const ap = airportData[leg.arrIcao.toUpperCase()];
+                      const off = getOffsetLabel(ap?.tz, leg.date, leg.time);
+                      return (
+                        <p className="text-[10px] text-sky-500/80 mt-0.5 leading-tight">
+                          <span className="text-slate-400">{ap?.name}</span>
+                          {off && <span className="font-mono"> · {off}</span>}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">EET (HH:MM)</label>
@@ -643,12 +651,16 @@ export default function FlightScheduler() {
                   className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                     mvtDepStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                   }`} />
-                {mvtDepStatus === "ok" && (
-                  <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
-                    {getOffsetLabel(airportData[mvt.depIcao.toUpperCase()]?.tz, mvt.date, mvt.chocks || mvt.takeoff)
-                      || airportData[mvt.depIcao.toUpperCase()]?.tz}
-                  </p>
-                )}
+                {mvtDepStatus === "ok" && (() => {
+                  const ap = airportData[mvt.depIcao.toUpperCase()];
+                  const off = getOffsetLabel(ap?.tz, mvt.date, mvt.chocks || mvt.takeoff);
+                  return (
+                    <p className="text-[10px] text-sky-500/80 mt-0.5 leading-tight">
+                      <span className="text-slate-400">{ap?.name}</span>
+                      {off && <span className="font-mono"> · {off}</span>}
+                    </p>
+                  );
+                })()}
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Arr ICAO</label>
@@ -658,12 +670,16 @@ export default function FlightScheduler() {
                   className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                     mvtArrStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                   }`} />
-                {mvtArrStatus === "ok" && (
-                  <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
-                    {getOffsetLabel(airportData[mvt.arrIcao.toUpperCase()]?.tz, mvt.date, mvt.takeoff)
-                      || airportData[mvt.arrIcao.toUpperCase()]?.tz}
-                  </p>
-                )}
+                {mvtArrStatus === "ok" && (() => {
+                  const ap = airportData[mvt.arrIcao.toUpperCase()];
+                  const off = getOffsetLabel(ap?.tz, mvt.date, mvt.takeoff);
+                  return (
+                    <p className="text-[10px] text-sky-500/80 mt-0.5 leading-tight">
+                      <span className="text-slate-400">{ap?.name}</span>
+                      {off && <span className="font-mono"> · {off}</span>}
+                    </p>
+                  );
+                })()}
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Crew</label>
