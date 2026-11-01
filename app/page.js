@@ -62,6 +62,43 @@ function hhmm(h, min) {
   return `${pad(h)}${pad(min)}`;
 }
 
+/**
+ * Active UTC offset + abbreviation for a timezone on a given date/time.
+ * e.g. "UTC−4 · EDT"  (uses the date so DST is correct)
+ */
+function getOffsetLabel(timeZone, dateStr, timeStr) {
+  if (!timeZone || !dateStr) return null;
+  try {
+    const [Y, M, D] = dateStr.split("-").map(Number);
+    let h = 12, min = 0;
+    if (timeStr && String(timeStr).includes(":")) {
+      const parts = timeStr.split(":").map(Number);
+      h = parts[0] ?? 12;
+      min = parts[1] ?? 0;
+    }
+    const epoch = Date.UTC(Y, M - 1, D, h, min);
+
+    const offsetPart = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "shortOffset",
+    }).formatToParts(new Date(epoch)).find((p) => p.type === "timeZoneName")?.value;
+
+    const abbrPart = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "short",
+    }).formatToParts(new Date(epoch)).find((p) => p.type === "timeZoneName")?.value;
+
+    // "GMT-4" / "GMT+5:30" → "UTC−4" / "UTC+5:30"
+    let offset = (offsetPart || "").replace(/^GMT/, "UTC").replace("-", "−");
+    if (abbrPart && !/^GMT/i.test(abbrPart) && !/^UTC/i.test(abbrPart)) {
+      return `${offset} · ${abbrPart}`;
+    }
+    return offset || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Format a UTC epoch as yyyy-mm-dd and HH:MM for form inputs */
 function epochToDateAndTime(epochMs) {
   const p = getLocalParts(epochMs, "UTC");
@@ -489,6 +526,12 @@ export default function FlightScheduler() {
                       className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                         depStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                       }`} />
+                    {depStatus === "ok" && (
+                      <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
+                        {getOffsetLabel(airportData[leg.depIcao.toUpperCase()]?.tz, leg.date, leg.time)
+                          || airportData[leg.depIcao.toUpperCase()]?.tz}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Arr ICAO</label>
@@ -498,6 +541,12 @@ export default function FlightScheduler() {
                       className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                         arrStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                       }`} />
+                    {arrStatus === "ok" && (
+                      <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
+                        {getOffsetLabel(airportData[leg.arrIcao.toUpperCase()]?.tz, leg.date, leg.time)
+                          || airportData[leg.arrIcao.toUpperCase()]?.tz}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">EET (HH:MM)</label>
@@ -594,6 +643,12 @@ export default function FlightScheduler() {
                   className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                     mvtDepStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                   }`} />
+                {mvtDepStatus === "ok" && (
+                  <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
+                    {getOffsetLabel(airportData[mvt.depIcao.toUpperCase()]?.tz, mvt.date, mvt.chocks || mvt.takeoff)
+                      || airportData[mvt.depIcao.toUpperCase()]?.tz}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Arr ICAO</label>
@@ -603,6 +658,12 @@ export default function FlightScheduler() {
                   className={`w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border outline-none uppercase ${
                     mvtArrStatus === "unknown" ? "border-amber-600" : "border-slate-700 focus:border-sky-500"
                   }`} />
+                {mvtArrStatus === "ok" && (
+                  <p className="text-[10px] text-sky-500/80 mt-0.5 font-mono leading-tight">
+                    {getOffsetLabel(airportData[mvt.arrIcao.toUpperCase()]?.tz, mvt.date, mvt.takeoff)
+                      || airportData[mvt.arrIcao.toUpperCase()]?.tz}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Crew</label>
