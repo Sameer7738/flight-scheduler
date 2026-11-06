@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
-import { Plus, Trash2, Copy, Plane, Check, Loader2, Link2 } from "lucide-react";
+import { Plus, Trash2, Copy, Plane, Check, Loader2, Link2, Download } from "lucide-react";
 
 const FALLBACK_DATA = {
   FCBB: { icao: "FCBB", name: "Maya-Maya Airport", city: "Brazzaville", country: "CG", tz: "Africa/Brazzaville" },
@@ -119,7 +119,12 @@ function buildMixedLine(leg, airportData) {
   const etaLt = `${pad(localArr.h)}${pad(localArr.min)}LT${ltArrMarker}`;
   const header = formatDDMon(Y, M, D);
   const pax = leg.pax !== "" && leg.pax != null ? `${pad(Number(leg.pax))} PAX` : "PAX";
-  return `${header} | ETD ${etd}/${etdLt} ${dep.icao} | ETA ${eta}/${etaLt} ${arr.icao} | EET ${leg.eet} | ${pax}`;
+  let line = `${header} | ETD ${etd}/${etdLt} ${dep.icao} | ETA ${eta}/${etaLt} ${arr.icao} | EET ${leg.eet} | ${pax}`;
+  const flt = (leg.flightNo || "").trim().toUpperCase();
+  const reg = (leg.reg || "").trim().toUpperCase();
+  if (flt) line += ` | FLT ${flt}`;
+  if (reg) line += ` | REG ${reg}`;
+  return line;
 }
 
 function buildScheduleLines(leg, airportData) {
@@ -138,8 +143,11 @@ function buildScheduleLines(leg, airportData) {
   const utcEtaMarker = dayMarker(dayDiff(utcDep, utcArr));
   const localEtaMarker = dayMarker(dayDiff(localDep, localArr));
   const pax = leg.pax !== "" && leg.pax != null ? `${pad(Number(leg.pax))} PAX` : "00 PAX";
-  const localLine = `${formatDDMon(localDep.y, localDep.m, localDep.d)} | ETD ${pad(localDep.h)}${pad(localDep.min)}LT ${dep.icao} | ETA ${pad(localArr.h)}${pad(localArr.min)}LT${localEtaMarker} ${arr.icao} | EET ${leg.eet} | ${pax}`;
-  const utcLine = `${formatDDMon(utcDep.y, utcDep.m, utcDep.d)} | ETD ${pad(utcDep.h)}${pad(utcDep.min)}Z ${dep.icao} | ETA ${pad(utcArr.h)}${pad(utcArr.min)}Z${utcEtaMarker} ${arr.icao} | EET ${leg.eet} | ${pax}`;
+  const flt = (leg.flightNo || "").trim().toUpperCase();
+  const reg = (leg.reg || "").trim().toUpperCase();
+  const extras = `${flt ? ` | FLT ${flt}` : ""}${reg ? ` | REG ${reg}` : ""}`;
+  const localLine = `${formatDDMon(localDep.y, localDep.m, localDep.d)} | ETD ${pad(localDep.h)}${pad(localDep.min)}LT ${dep.icao} | ETA ${pad(localArr.h)}${pad(localArr.min)}LT${localEtaMarker} ${arr.icao} | EET ${leg.eet} | ${pax}${extras}`;
+  const utcLine = `${formatDDMon(utcDep.y, utcDep.m, utcDep.d)} | ETD ${pad(utcDep.h)}${pad(utcDep.min)}Z ${dep.icao} | ETA ${pad(utcArr.h)}${pad(utcArr.min)}Z${utcEtaMarker} ${arr.icao} | EET ${leg.eet} | ${pax}${extras}`;
   return { localLine, utcLine, localDepDate: formatDDMon(localDep.y, localDep.m, localDep.d), utcDepDate: formatDDMon(utcDep.y, utcDep.m, utcDep.d) };
 }
 
@@ -170,7 +178,7 @@ function buildMvt(mvt, airportData, tail) {
 }
 
 function emptyLeg() {
-  return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", pax: "" };
+  return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", pax: "", flightNo: "", reg: "" };
 }
 
 function emptyMvt() {
@@ -269,7 +277,7 @@ export default function FlightScheduler() {
     if (etaEpoch == null || !fromLeg.arrIcao) return;
     const turnMs = (Number(turnaroundMin) || 60) * 60 * 1000;
     const { date, time } = epochToDateAndTime(etaEpoch + turnMs);
-    const next = { ...emptyLeg(), date, time, depIcao: fromLeg.arrIcao.toUpperCase() };
+    const next = { ...emptyLeg(), date, time, depIcao: fromLeg.arrIcao.toUpperCase(), reg: (fromLeg.reg || "").toUpperCase() };
     setLegs((prev) => {
       const idx = prev.findIndex((l) => l.id === fromLeg.id);
       if (idx === -1) return [...prev, next];
@@ -318,6 +326,77 @@ export default function FlightScheduler() {
     if (!mvtResult) return;
     const text = ["// UTC", mvtResult.utcMsg, "", "// LOCAL", mvtResult.localMsg].join("\n");
     navigator.clipboard.writeText(text).then(() => { setCopiedMvt(true); setTimeout(() => setCopiedMvt(false), 1500); });
+  }
+
+  async function exportXlsx() {
+    if (validCount === 0) return;
+    const rows = [];
+    rows.push([
+      "Leg", "Date (Z)", "ETD (Z)", "Dep ICAO", "Dep Airport", "Arr ICAO", "Arr Airport",
+      "EET", "ETA (Z)", "PAX", "Flight No", "Registration",
+      "ETD Local", "ETA Local", "Mixed line", "Local line", "UTC line",
+    ]);
+    legs.forEach((leg, idx) => {
+      const mixed = buildMixedLine(leg, airportData || {});
+      const sched = buildScheduleLines(leg, airportData || {});
+      if (!mixed || !sched) return;
+      const dep = airportData[leg.depIcao?.toUpperCase()] || {};
+      const arr = airportData[leg.arrIcao?.toUpperCase()] || {};
+      const [Y, M, D] = leg.date.split("-").map(Number);
+      const [depH, depMin] = leg.time.split(":").map(Number);
+      const [eetH, eetMin] = leg.eet.split(":").map(Number);
+      const depEpoch = Date.UTC(Y, M - 1, D, depH, depMin);
+      const arrEpoch = depEpoch + (eetH * 60 + eetMin) * 60000;
+      const utcArr = getLocalParts(arrEpoch, "UTC");
+      const localDep = dep.tz ? getLocalParts(depEpoch, dep.tz) : null;
+      const localArr = arr.tz ? getLocalParts(arrEpoch, arr.tz) : null;
+      rows.push([
+        idx + 1,
+        leg.date,
+        leg.time,
+        leg.depIcao?.toUpperCase() || "",
+        dep.name || "",
+        leg.arrIcao?.toUpperCase() || "",
+        arr.name || "",
+        leg.eet,
+        `${pad(utcArr.h)}:${pad(utcArr.min)}`,
+        leg.pax !== "" && leg.pax != null ? Number(leg.pax) : "",
+        (leg.flightNo || "").trim().toUpperCase(),
+        (leg.reg || "").trim().toUpperCase() || (tail || "").trim().toUpperCase(),
+        localDep ? `${pad(localDep.h)}:${pad(localDep.min)}` : "",
+        localArr ? `${pad(localArr.h)}:${pad(localArr.min)}` : "",
+        mixed,
+        sched.localLine,
+        sched.utcLine,
+      ]);
+    });
+    if (rows.length < 2) return;
+
+    function esc(v) {
+      return String(v ?? "")
+        .replace(/&/g, "&")
+        .replace(/</g, "<")
+        .replace(/>/g, ">")
+        .replace(/"/g, """);
+    }
+    const sheetRows = rows.map((row) => {
+      const cells = row.map((cell) => {
+        const isNum = typeof cell === "number";
+        return `<Cell><Data ss:Type="${isNum ? "Number" : "String"}">${esc(cell)}</Data></Cell>`;
+      }).join("");
+      return `<Row>${cells}</Row>`;
+    }).join("");
+    const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n <Worksheet ss:Name="Schedule">\n  <Table>${sheetRows}</Table>\n </Worksheet>\n</Workbook>`;
+    const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const label = (tail || "schedule").trim().toUpperCase() || "schedule";
+    a.href = url;
+    a.download = `${label}_schedule.xls`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   function icaoStatus(code) {
@@ -378,7 +457,7 @@ export default function FlightScheduler() {
                     <button onClick={() => removeLeg(leg.id)} className="text-slate-500 hover:text-red-400 transition-colors"><Trash2 size={16} /></button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Date (Zulu)</label>
                     <input type="date" value={leg.date} onChange={(e) => updateLeg(leg.id, "date", e.target.value)}
@@ -419,6 +498,18 @@ export default function FlightScheduler() {
                     <input type="number" min="0" value={leg.pax} onChange={(e) => updateLeg(leg.id, "pax", e.target.value)}
                       className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
                   </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Flight No <span className="text-slate-600">(opt)</span></label>
+                    <input type="text" value={leg.flightNo || ""} onChange={(e) => updateLeg(leg.id, "flightNo", e.target.value.toUpperCase())}
+                      placeholder="ABC123"
+                      className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none uppercase font-mono" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Registration <span className="text-slate-600">(opt)</span></label>
+                    <input type="text" value={leg.reg || ""} onChange={(e) => updateLeg(leg.id, "reg", e.target.value.toUpperCase())}
+                      placeholder="N291VK"
+                      className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none uppercase font-mono" />
+                  </div>
                 </div>
                 {(depStatus === "unknown" || arrStatus === "unknown") && (
                   <p className="text-amber-500 text-xs mt-2">ICAO code not found in database — check spelling or add it to public/airports.json.</p>
@@ -436,10 +527,16 @@ export default function FlightScheduler() {
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Output (Zulu + Local together)</h2>
             {validCount > 0 && (
-              <button onClick={copyMixed} className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
-                {copiedMixed ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                {copiedMixed ? "Copied" : "Copy all"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={exportXlsx} className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+                  <Download size={14} />
+                  Export Excel
+                </button>
+                <button onClick={copyMixed} className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+                  {copiedMixed ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                  {copiedMixed ? "Copied" : "Copy all"}
+                </button>
+              </div>
             )}
           </div>
           <div className="bg-black rounded-xl border border-slate-800 p-4 font-mono text-sm space-y-1 min-h-[80px]">
