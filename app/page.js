@@ -178,7 +178,7 @@ function buildMvt(mvt, airportData, tail) {
 }
 
 function emptyLeg() {
-  return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", pax: "", flightNo: "", reg: "" };
+  return { id: crypto.randomUUID(), date: "", time: "", depIcao: "", arrIcao: "", eet: "", eta: "", pax: "", flightNo: "", reg: "" };
 }
 
 function emptyMvt() {
@@ -266,8 +266,40 @@ export default function FlightScheduler() {
     );
   }
 
+  /** Compute EET (HH:MM) from ETD + ETA on the same/next Zulu day */
+  function eetFromEtdEta(dateStr, etdStr, etaStr) {
+    if (!dateStr || !etdStr || !etaStr) return null;
+    if (!etdStr.includes(":") || !etaStr.includes(":")) return null;
+    const [Y, M, D] = dateStr.split("-").map(Number);
+    const [depH, depMin] = etdStr.split(":").map(Number);
+    const [arrH, arrMin] = etaStr.split(":").map(Number);
+    if ([Y, M, D, depH, depMin, arrH, arrMin].some((n) => Number.isNaN(n))) return null;
+    let depEpoch = Date.UTC(Y, M - 1, D, depH, depMin);
+    let arrEpoch = Date.UTC(Y, M - 1, D, arrH, arrMin);
+    // If ETA is before ETD on the clock, treat as next day
+    if (arrEpoch <= depEpoch) arrEpoch += 86400000;
+    const mins = Math.round((arrEpoch - depEpoch) / 60000);
+    if (mins < 0 || mins > 48 * 60) return null;
+    return `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`;
+  }
+
   function updateLeg(id, field, value) {
-    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, [field]: value } : l)));
+    setLegs((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l;
+        const next = { ...l, [field]: value };
+        // Auto-calc EET when ETA, ETD, or date changes and ETA is present
+        if (field === "eta" || field === "time" || field === "date") {
+          const computed = eetFromEtdEta(next.date, next.time, next.eta);
+          if (computed) next.eet = computed;
+        }
+        // If user manually edits EET, clear ETA so the two don't fight
+        if (field === "eet") {
+          next.eta = "";
+        }
+        return next;
+      })
+    );
   }
   function addLeg() { setLegs((prev) => [...prev, emptyLeg()]); }
   function removeLeg(id) { setLegs((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev)); }
@@ -489,9 +521,17 @@ export default function FlightScheduler() {
                     })()}
                   </div>
                   <div>
+                    <label className="text-xs text-slate-500 block mb-1">ETA (HH:MM Z) <span className="text-slate-600">(opt)</span></label>
+                    <input type="time" value={leg.eta || ""} onChange={(e) => updateLeg(leg.id, "eta", e.target.value)}
+                      className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+                  </div>
+                  <div>
                     <label className="text-xs text-slate-500 block mb-1">EET (HH:MM)</label>
                     <input type="time" placeholder="01:50" value={leg.eet} onChange={(e) => updateLeg(leg.id, "eet", e.target.value)}
                       className="w-full bg-slate-800 rounded-lg px-2 py-1.5 text-sm border border-slate-700 focus:border-sky-500 outline-none" />
+                    {leg.eta && leg.eet && (
+                      <p className="text-[10px] text-sky-500/70 mt-0.5">Auto from ETA</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">PAX</label>
