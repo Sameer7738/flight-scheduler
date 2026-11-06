@@ -374,10 +374,10 @@ export default function FlightScheduler() {
 
     function esc(v) {
       return String(v ?? "")
-        .replace(/&/g, "&")
-        .replace(/</g, "<")
-        .replace(/>/g, ">")
-        .replace(/"/g, """);
+        .replace(/&/g, "\u0026amp;")
+        .replace(/</g, "\u0026lt;")
+        .replace(/>/g, "\u0026gt;")
+        .replace(/"/g, "\u0026quot;");
     }
     const sheetRows = rows.map((row) => {
       const cells = row.map((cell) => {
